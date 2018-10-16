@@ -8,34 +8,49 @@ namespace eosio {
 #define KAFKA_STATUS_MSG_INVALID 2
 #define KAFKA_STATUS_QUEUE_FULL 3
 
-#define KAFKA_TRX_ACCEPT 0
+#define KAFKA_TRX_ACCEPTED 0
 #define KAFKA_TRX_APPLIED 1
+#define KAFKA_BLOCK_ACCEPTED 2
+#define KAFKA_BLOCK_IRREVERSIBLE 3
 
 class kafka_producer {
     public:
         kafka_producer() {
 
-            accept_rk = NULL;
-            applied_rk = NULL;
-            accept_rkt = NULL;
-            applied_rkt = NULL;
-            accept_conf = NULL;
-            applied_conf = NULL;
+            trx_accepted_rk = NULL;
+            trx_applied_rk = NULL;
+            block_accepted_rk = NULL;
+            block_irreversible_rk = NULL;
+            trx_accepted_rkt = NULL;
+            trx_applied_rkt = NULL;
+            block_accepted_rkt = NULL;
+            block_irreversible_rkt = NULL;
+            trx_accepted_conf = NULL;
+            trx_applied_conf = NULL;
+            block_accepted_conf = NULL;
+            block_irreversible_conf = NULL;
         };
 
-        int trx_kafka_init(char *brokers, char *acceptopic, char *appliedtopic);
+        int kafka_init(char *brokers, char *trx_accepted_topic, char *trx_applied_topic,
+                char *block_accepted_topic, char *block_irreversible_topic);
 
-        int trx_kafka_sendmsg(int trxtype, char *msgstr);
+        int kafka_sendmsg(int trxtype, char *msgstr);
 
-        int trx_kafka_destroy(void);
+        int kafka_destroy(void);
 
     private:
-        rd_kafka_t *accept_rk;            /*Producer instance handle*/
-        rd_kafka_t *applied_rk;            /*Producer instance handle*/
-        rd_kafka_topic_t *accept_rkt;     /*topic object*/
-        rd_kafka_topic_t *applied_rkt;     /*topic object*/
-        rd_kafka_conf_t *accept_conf;     /*kafka config*/
-        rd_kafka_conf_t *applied_conf;     /*kafka config*/
+        rd_kafka_t *trx_accepted_rk;                /*Producer instance handle*/
+        rd_kafka_t *trx_applied_rk;                 /*Producer instance handle*/
+        rd_kafka_t *block_accepted_rk;              /*Producer instance handle*/
+        rd_kafka_t *block_irreversible_rk;          /*Producer instance handle*/
+        rd_kafka_topic_t *trx_accepted_rkt;         /*topic object*/
+        rd_kafka_topic_t *trx_applied_rkt;          /*topic object*/
+        rd_kafka_topic_t *block_accepted_rkt;       /*topic object*/
+        rd_kafka_topic_t *block_irreversible_rkt;   /*topic object*/
+        rd_kafka_conf_t *trx_accepted_conf;         /*kafka config*/
+        rd_kafka_conf_t *trx_applied_conf;          /*kafka config*/
+        rd_kafka_conf_t *block_accepted_conf;       /*kafka config*/
+        rd_kafka_conf_t *block_irreversible_conf;   /*kafka config*/
 
         static void dr_msg_cb(rd_kafka_t *rk, const rd_kafka_message_t *rkmessage, void *opaque){}
     };
