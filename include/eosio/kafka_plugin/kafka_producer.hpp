@@ -31,8 +31,10 @@ class kafka_producer {
             block_irreversible_conf = NULL;
         };
 
-        int kafka_init(char *brokers, char *trx_accepted_topic, char *trx_applied_topic,
-                char *block_accepted_topic, char *block_irreversible_topic);
+        int kafka_init(char *brokers, char *accepted_trx_topic, char *applied_trx_topic,
+                char *accepted_block_topic, char *irreversible_block_topic);
+
+        int kafka_create_topic(char *brokers, char *topic, rd_kafka_t **rk, rd_kafka_topic_t **rkt, rd_kafka_conf_t **conf);
 
         int kafka_sendmsg(int trxtype, char *msgstr);
 

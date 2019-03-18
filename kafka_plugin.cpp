@@ -1,6 +1,6 @@
 /**
  *  @file
- *  @copyright defined in eos/LICENSE.txt
+ *  @copyright defined in eos/LICENSE
  */
 #include <stdlib.h>
 #include <eosio/kafka_plugin/kafka_producer.hpp>
@@ -108,12 +108,14 @@ namespace eosio {
 
         bool add_action_trace( const chain::action_trace& atrace,
                                const chain::transaction_trace_ptr& t,
-                               bool executed, const std::chrono::milliseconds& now );
+                               bool executed );
 
         void db_update_account(const chain::action& act);
 
         /// @return true if act should be added to mongodb, false to skip it
-        bool filter_include( const chain::action_trace& action_trace ) const;
+        bool filter_include( const account_name& receiver, const action_name& act_name,
+                             const vector<chain::permission_level>& authorization ) const;
+        bool filter_include( const transaction& trx ) const;
 
         void init();
         void wipe_database();
@@ -201,20 +203,21 @@ namespace eosio {
     const std::string kafka_plugin_impl::pub_keys_col = "pub_keys";
     const std::string kafka_plugin_impl::account_controls_col = "account_controls";
 
-    bool kafka_plugin_impl::filter_include( const chain::action_trace& action_trace ) const {
+    bool kafka_plugin_impl::filter_include( const account_name& receiver, const action_name& act_name,
+                                            const vector<chain::permission_level>& authorization ) const {
         bool include = false;
         if( filter_on_star ) {
             include = true;
         } else {
-            auto itr = std::find_if( filter_on.cbegin(), filter_on.cend(), [&action_trace]( const auto& filter ) {
-                return filter.match( action_trace.receipt.receiver, action_trace.act.name, 0 );
+            auto itr = std::find_if( filter_on.cbegin(), filter_on.cend(), [&receiver, &act_name]( const auto& filter ) {
+                return filter.match( receiver, act_name, 0 );
             } );
             if( itr != filter_on.cend() ) {
                 include = true;
             } else {
-                for( const auto& a : action_trace.act.authorization ) {
-                    auto itr = std::find_if( filter_on.cbegin(), filter_on.cend(), [&action_trace, &a]( const auto& filter ) {
-                        return filter.match( action_trace.receipt.receiver, action_trace.act.name, a.actor );
+                for( const auto& a : authorization ) {
+                    auto itr = std::find_if( filter_on.cbegin(), filter_on.cend(), [&receiver, &act_name, &a]( const auto& filter ) {
+                        return filter.match( receiver, act_name, a.actor );
                     } );
                     if( itr != filter_on.cend() ) {
                         include = true;
@@ -225,19 +228,43 @@ namespace eosio {
         }
 
         if( !include ) { return false; }
+        if( filter_out.empty() ) { return true; }
 
-        auto itr = std::find_if( filter_out.cbegin(), filter_out.cend(), [&action_trace]( const auto& filter ) {
-            return filter.match( action_trace.receipt.receiver, action_trace.act.name, 0 );
+        auto itr = std::find_if( filter_out.cbegin(), filter_out.cend(), [&receiver, &act_name]( const auto& filter ) {
+            return filter.match( receiver, act_name, 0 );
         } );
         if( itr != filter_out.cend() ) { return false; }
 
-        for( const auto& a : action_trace.act.authorization ) {
-            auto itr = std::find_if( filter_out.cbegin(), filter_out.cend(), [&action_trace, &a]( const auto& filter ) {
-                return filter.match( action_trace.receipt.receiver, action_trace.act.name, a.actor );
+        for( const auto& a : authorization ) {
+            auto itr = std::find_if( filter_out.cbegin(), filter_out.cend(), [&receiver, &act_name, &a]( const auto& filter ) {
+                return filter.match( receiver, act_name, a.actor );
             } );
             if( itr != filter_out.cend() ) { return false; }
         }
 
+        return true;
+    }
+
+    bool kafka_plugin_impl::filter_include( const transaction& trx ) const
+    {
+        if( !filter_on_star || !filter_out.empty() ) {
+            bool include = false;
+            for( const auto& a : trx.actions ) {
+                if( filter_include( a.account, a.name, a.authorization ) ) {
+                    include = true;
+                    break;
+                }
+            }
+            if( !include ) {
+                for( const auto& a : trx.context_free_actions ) {
+                    if( filter_include( a.account, a.name, a.authorization ) ) {
+                        include = true;
+                        break;
+                    }
+                }
+            }
+            return include;
+        }
         return true;
     }
 
@@ -561,6 +588,18 @@ namespace eosio {
                                 }
                             }
                         }
+                        // mongo does not like empty json keys
+                        // make abi_serializer use empty_name instead of "" for the action data
+                        for( auto& s : abi.structs ) {
+                            if( s.name.empty() ) {
+                                s.name = "empty_struct_name";
+                            }
+                            for( auto& f : s.fields ) {
+                                if( f.name.empty() ) {
+                                    f.name = "empty_field_name";
+                                }
+                            }
+                        }
                         abis.set_abi( abi, abi_serializer_max_time );
                         entry.serializer.emplace( std::move( abis ) );
                         abi_cache_index.insert( entry );
@@ -637,29 +676,31 @@ namespace eosio {
     }
 
     void kafka_plugin_impl::_process_accepted_transaction(const chain::transaction_metadata_ptr &t) {
+        const signed_transaction& trx = t->packed_trx->get_signed_transaction();
 
-       const auto& trx = t->trx;
-       string trx_json = fc::json::to_string( trx );
-       producer->kafka_sendmsg(KAFKA_TRX_ACCEPTED,(char*)trx_json.c_str());
+        if( !filter_include( trx ) ) return;
 
+        auto v = to_variant_with_abi( trx );
+        string trx_json = fc::json::to_string( v );
+
+        producer->kafka_sendmsg(KAFKA_TRX_ACCEPTED,(char*)trx_json.c_str());
     }
 
     bool
     kafka_plugin_impl::add_action_trace( const chain::action_trace& atrace, const chain::transaction_trace_ptr& t,
-                                            bool executed, const std::chrono::milliseconds& now )
+                                            bool executed )
     {
-
         if( executed && atrace.receipt.receiver == chain::config::system_account_name ) {
             db_update_account( atrace.act );
         }
 
         bool added = false;
-        if( start_block_reached && filter_include( atrace ) ) {
+        if( start_block_reached && filter_include( atrace.receipt.receiver, atrace.act.name, atrace.act.authorization ) ) {
             added = true;
         }
 
-        for( const auto& iline_atrace : atrace.inline_traces ) {  // todo 递归处理 inline_actions
-            added |= add_action_trace( iline_atrace, t, executed, now );
+        for( const auto& inline_atrace : atrace.inline_traces ) {
+            added |= add_action_trace( inline_atrace, t, executed );
         }
 
         return added;
@@ -667,14 +708,11 @@ namespace eosio {
 
     void kafka_plugin_impl::_process_applied_transaction(const transaction_info_st &t) {
 
-        auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::microseconds{fc::time_point::now().time_since_epoch().count()});
-
         bool write_atraces = false;
         bool executed = t.trace->receipt.valid() && t.trace->receipt->status == chain::transaction_receipt_header::executed;
 
         for( const auto& atrace : t.trace->action_traces ) {
-            write_atraces |= add_action_trace( atrace, t.trace, executed, now );
+            write_atraces |= add_action_trace( atrace, t.trace, executed );
         }
 
         if( !start_block_reached ) return; //< add_action_trace calls db_update_account which must be called always
@@ -692,6 +730,20 @@ namespace eosio {
 
     void kafka_plugin_impl::_process_accepted_block( const chain::block_state_ptr& bs )
     {
+        const auto block_num = bs->block->block_num();
+        const auto block_time = bs->block->timestamp;
+        const auto block_id = bs->block->id();
+        const auto block_id_str = block_id.str();
+
+        auto v = to_variant_with_abi( *bs->block );
+        auto block_json = fc::json::to_string( v );
+
+        string accepted_block_json = "{\"block_num\":" + std::to_string(block_num) +
+                                         ",\"block_time\":" + fc::string(block_time.to_time_point()) +
+                                         ",\"block_id\":" + block_id_str +
+                                         ",\"block\":" + block_json;
+
+        producer->kafka_sendmsg(KAFKA_BLOCK_ACCEPTED, (char*)accepted_block_json.c_str());
     }
 
     void kafka_plugin_impl::_process_irreversible_block(const chain::block_state_ptr& bs)
@@ -701,27 +753,14 @@ namespace eosio {
         const auto block_id = bs->block->id();
         const auto block_id_str = block_id.str();
 
-        string irreversible_block_json = "{\"block_num\":" + std::to_string(block_num) +
-                ",\"block_time\":" + fc::string(block_time.to_time_point()) +
-                ",\"block_id\":" + block_id_str +
-                ",\"transactions\":[";
+        auto v = to_variant_with_abi( *bs->block );
+        auto block_json = fc::json::to_string( v );
 
-        for( const auto& receipt : bs->block->transactions ) {
-            string trx_id_str;
-            if( receipt.trx.contains<packed_transaction>() ) {
-                const auto& pt = receipt.trx.get<packed_transaction>();
-                // get id via get_raw_transaction() as packed_transaction.id() mutates internal transaction state
-                const auto& raw = pt.get_raw_transaction();
-                const auto& id = fc::raw::unpack<transaction>( raw ).id();
-                trx_id_str = id.str();
-            } else {
-                const auto& id = receipt.trx.get<transaction_id_type>();
-                trx_id_str = id.str();
-            }
-            irreversible_block_json += trx_id_str + ",";
-        }
-        irreversible_block_json.pop_back();
-        irreversible_block_json += "]";
+        string irreversible_block_json = "{\"block_num\":" + std::to_string(block_num) +
+                                         ",\"block_time\":" + fc::string(block_time.to_time_point()) +
+                                         ",\"block_id\":" + block_id_str +
+                                         ",\"block\":" + block_json;
+
         producer->kafka_sendmsg(KAFKA_BLOCK_IRREVERSIBLE, (char*)irreversible_block_json.c_str());
     }
 

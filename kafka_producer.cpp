@@ -12,143 +12,87 @@
  */
 namespace eosio {
 
-    int kafka_producer::kafka_init(char *brokers, char *trx_accepted_topic, char *trx_applied_topic,
-            char *block_accepted_topic, char *block_irreversible_topic) {
+    int kafka_producer::kafka_create_topic(char *brokers, char *topic, rd_kafka_t **rk, rd_kafka_topic_t **rkt, rd_kafka_conf_t **conf) {
         char errstr[512];
+        if (brokers == NULL || topic == NULL) {
+            return KAFKA_STATUS_INIT_FAIL;
+        }
+
+        *conf = rd_kafka_conf_new();
+
+        if (rd_kafka_conf_set(*conf, "bootstrap.servers", brokers, errstr,
+                              sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+            fprintf(stderr, "%s\n", errstr);
+            return KAFKA_STATUS_INIT_FAIL;
+        }
+
+        rd_kafka_conf_set_dr_msg_cb(*conf, dr_msg_cb);
+
+        *rk = rd_kafka_new(RD_KAFKA_PRODUCER, *conf, errstr, sizeof(errstr));
+        if (!(*rk)) {
+            fprintf(stderr, "%% Failed to create new producer:%s\n", errstr);
+            return KAFKA_STATUS_INIT_FAIL;
+        }
+
+        *rkt = rd_kafka_topic_new(*rk, topic, NULL);
+        if (!(*rkt)) {
+            fprintf(stderr, "%% Failed to create topic object: %s\n",
+                    rd_kafka_err2str(rd_kafka_last_error()));
+            rd_kafka_destroy(*rk);
+            *rk = NULL;
+            return KAFKA_STATUS_INIT_FAIL;
+        }
+
+        return KAFKA_STATUS_OK;
+    }
+
+    int kafka_producer::kafka_init(char *brokers, char *accepted_trx_topic, char *applied_trx_topic,
+                                   char *accepted_block_topic, char *irreversible_block_topic) {
+
         if (brokers == NULL) {
             return KAFKA_STATUS_INIT_FAIL;
         }
 
-        if (trx_accepted_topic != NULL) {
-
-            trx_accepted_conf = rd_kafka_conf_new();
-
-            if (rd_kafka_conf_set(trx_accepted_conf, "bootstrap.servers", brokers, errstr,
-                                  sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                fprintf(stderr, "%s\n", errstr);
-                return KAFKA_STATUS_INIT_FAIL;
-            }
-
-            rd_kafka_conf_set_dr_msg_cb(trx_accepted_conf, dr_msg_cb);
-
-            trx_accepted_rk = rd_kafka_new(RD_KAFKA_PRODUCER, trx_accepted_conf, errstr, sizeof(errstr));
-            if (!trx_accepted_rk) {
-                fprintf(stderr, "%% Failed to create new producer:%s\n", errstr);
-                return KAFKA_STATUS_INIT_FAIL;
-            }
-
-            trx_accepted_rkt = rd_kafka_topic_new(trx_accepted_rk, trx_accepted_topic, NULL);
-            if (!trx_accepted_rkt) {
-                fprintf(stderr, "%% Failed to create topic object: %s\n",
-                        rd_kafka_err2str(rd_kafka_last_error()));
-                rd_kafka_destroy(trx_accepted_rk);
-                trx_accepted_rk = NULL;
+        if (accepted_trx_topic != NULL) {
+            if(KAFKA_STATUS_OK != kafka_create_topic(brokers, accepted_trx_topic, &trx_accepted_rk, &trx_accepted_rkt, &trx_accepted_conf)) {
                 return KAFKA_STATUS_INIT_FAIL;
             }
         }
 
-        if (trx_applied_topic != NULL) {
-
-            trx_applied_conf = rd_kafka_conf_new();
-
-            if (rd_kafka_conf_set(trx_applied_conf, "bootstrap.servers", brokers, errstr,
-                                  sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                fprintf(stderr, "%s\n", errstr);
-                return KAFKA_STATUS_INIT_FAIL;
-            }
-
-            rd_kafka_conf_set_dr_msg_cb(trx_applied_conf, dr_msg_cb);
-
-
-            trx_applied_rk = rd_kafka_new(RD_KAFKA_PRODUCER, trx_applied_conf, errstr, sizeof(errstr));
-            if (!trx_applied_rk) {
-                fprintf(stderr, "%% Failed to create new producer:%s\n", errstr);
-                return KAFKA_STATUS_INIT_FAIL;
-            }
-
-            trx_applied_rkt = rd_kafka_topic_new(trx_applied_rk, trx_applied_topic, NULL);
-            if (!trx_applied_rkt) {
-                fprintf(stderr, "%% Failed to create topic object: %s\n",
-                        rd_kafka_err2str(rd_kafka_last_error()));
-                rd_kafka_destroy(trx_applied_rk);
-                trx_applied_rk = NULL;
+        if (applied_trx_topic != NULL) {
+            if(KAFKA_STATUS_OK != kafka_create_topic(brokers, applied_trx_topic, &trx_applied_rk, &trx_applied_rkt, &trx_applied_conf)) {
                 return KAFKA_STATUS_INIT_FAIL;
             }
         }
 
-        if (block_accepted_topic != NULL) {
-
-            block_accepted_conf = rd_kafka_conf_new();
-
-            if (rd_kafka_conf_set(block_accepted_conf, "bootstrap.servers", brokers, errstr,
-                                  sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                fprintf(stderr, "%s\n", errstr);
-                return KAFKA_STATUS_INIT_FAIL;
-            }
-
-            rd_kafka_conf_set_dr_msg_cb(block_accepted_conf, dr_msg_cb);
-
-
-            block_accepted_rk = rd_kafka_new(RD_KAFKA_PRODUCER, block_accepted_conf, errstr, sizeof(errstr));
-            if (!block_accepted_rk) {
-                fprintf(stderr, "%% Failed to create new producer:%s\n", errstr);
-                return KAFKA_STATUS_INIT_FAIL;
-            }
-
-            block_accepted_rkt = rd_kafka_topic_new(block_accepted_rk, trx_applied_topic, NULL);
-            if (!block_accepted_rkt) {
-                fprintf(stderr, "%% Failed to create topic object: %s\n",
-                        rd_kafka_err2str(rd_kafka_last_error()));
-                rd_kafka_destroy(block_accepted_rk);
-                block_accepted_rk = NULL;
+        if (accepted_block_topic != NULL) {
+            if(KAFKA_STATUS_OK != kafka_create_topic(brokers, accepted_block_topic, &block_accepted_rk, &block_accepted_rkt, &block_accepted_conf)) {
                 return KAFKA_STATUS_INIT_FAIL;
             }
         }
 
-        if (block_irreversible_topic != NULL) {
-
-            block_irreversible_conf = rd_kafka_conf_new();
-
-            if (rd_kafka_conf_set(block_irreversible_conf, "bootstrap.servers", brokers, errstr,
-                                  sizeof(errstr)) != RD_KAFKA_CONF_OK) {
-                fprintf(stderr, "%s\n", errstr);
-                return KAFKA_STATUS_INIT_FAIL;
-            }
-
-            rd_kafka_conf_set_dr_msg_cb(block_irreversible_conf, dr_msg_cb);
-
-
-            block_irreversible_rk = rd_kafka_new(RD_KAFKA_PRODUCER, block_irreversible_conf, errstr, sizeof(errstr));
-            if (!block_irreversible_rk) {
-                fprintf(stderr, "%% Failed to create new producer:%s\n", errstr);
-                return KAFKA_STATUS_INIT_FAIL;
-            }
-
-            block_irreversible_rkt = rd_kafka_topic_new(block_irreversible_rk, trx_applied_topic, NULL);
-            if (!block_irreversible_rkt) {
-                fprintf(stderr, "%% Failed to create topic object: %s\n",
-                        rd_kafka_err2str(rd_kafka_last_error()));
-                rd_kafka_destroy(block_irreversible_rk);
-                block_irreversible_rk = NULL;
+        if (irreversible_block_topic != NULL) {
+            if(KAFKA_STATUS_OK != kafka_create_topic(brokers, irreversible_block_topic, &block_irreversible_rk, &block_irreversible_rkt, &block_irreversible_conf)){
                 return KAFKA_STATUS_INIT_FAIL;
             }
         }
+
         return KAFKA_STATUS_OK;
     }
 
     int kafka_producer::kafka_sendmsg(int trxtype, char *msgstr) {
         rd_kafka_t *rk;
         rd_kafka_topic_t *rkt;
-        if (trxtype == KAFKA_TRX_ACCEPTED) {
+        if (trxtype == KAFKA_TRX_ACCEPTED && trx_accepted_rk != NULL && trx_accepted_rkt != NULL) {
             rk = trx_accepted_rk;
             rkt = trx_accepted_rkt;
-        } else if (trxtype == KAFKA_TRX_APPLIED) {
+        } else if (trxtype == KAFKA_TRX_APPLIED && trx_applied_rk != NULL && trx_applied_rkt != NULL) {
             rk = trx_applied_rk;
             rkt = trx_applied_rkt;
-        } else if (trxtype == KAFKA_BLOCK_ACCEPTED) {
+        } else if (trxtype == KAFKA_BLOCK_ACCEPTED && block_accepted_rk != NULL && block_accepted_rkt != NULL) {
             rk = block_accepted_rk;
             rkt = block_accepted_rkt;
-        } else if (trxtype == KAFKA_BLOCK_IRREVERSIBLE) {
+        } else if (trxtype == KAFKA_BLOCK_IRREVERSIBLE && block_irreversible_rk != NULL && block_irreversible_rkt != NULL) {
             rk = block_irreversible_rk;
             rkt = block_irreversible_rkt;
         } else {
