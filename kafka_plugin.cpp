@@ -328,7 +328,6 @@ namespace eosio {
         }
     }
 
-
     void kafka_plugin_impl::accepted_block(const chain::block_state_ptr &bs) {
         try {
             if( !start_block_reached ) {
@@ -695,7 +694,7 @@ namespace eosio {
 
         auto v = to_variant_with_abi( *t );
 
-        producer->kafka_sendmsg(KAFKA_TRX_APPLIED, fc::json::to_string(v).c_str())
+        producer->kafka_sendmsg(KAFKA_TRX_APPLIED, (char*)fc::json::to_string(v).c_str());
     }
 
     void kafka_plugin_impl::_process_accepted_block( const chain::block_state_ptr& bs )
@@ -707,9 +706,10 @@ namespace eosio {
         auto v = to_variant_with_abi( *bs->block );
         auto block_json = fc::json::to_string( v );
 
-        string irreversible_block_json = "{\"block_id\":" + block_id_str +
-                                         ",\"block_num\":" + std::to_string(block_num) +
-                                         ",\"block\":" + block_json;
+        string accepted_block_json = "{\"block_id\":\"" + block_id_str + "\"" +
+                                     ",\"block_num\":" + std::to_string(block_num) +
+                                     ",\"block\":" + block_json +
+                                     "}";
 
         producer->kafka_sendmsg(KAFKA_BLOCK_ACCEPTED, (char*)accepted_block_json.c_str());
     }
@@ -723,9 +723,10 @@ namespace eosio {
         auto v = to_variant_with_abi( *bs->block );
         auto block_json = fc::json::to_string( v );
 
-        string irreversible_block_json = "{\"block_id\":" + block_id_str +
+        string irreversible_block_json = "{\"block_id\":\"" + block_id_str + "\"" +
                                          ",\"block_num\":" + std::to_string(block_num) +
-                                         ",\"block\":" + block_json;
+                                         ",\"block\":" + block_json +
+                                         "}";
 
         producer->kafka_sendmsg(KAFKA_BLOCK_IRREVERSIBLE, (char*)irreversible_block_json.c_str());
     }
