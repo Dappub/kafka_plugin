@@ -79,11 +79,6 @@ namespace eosio {
         fc::optional<boost::signals2::scoped_connection> accepted_transaction_connection;
         fc::optional<boost::signals2::scoped_connection> applied_transaction_connection;
         chain_plugin *chain_plug;
-        struct transaction_info_st {
-            uint64_t block_number;
-            fc::time_point block_time;
-            chain::transaction_trace_ptr trace;
-        };
 
         void consume_blocks();
 
@@ -93,8 +88,8 @@ namespace eosio {
         void applied_transaction(const chain::transaction_trace_ptr &);
         void process_accepted_transaction(const chain::transaction_metadata_ptr &);
         void _process_accepted_transaction(const chain::transaction_metadata_ptr &);
-        void process_applied_transaction(const transaction_info_st &);
-        void _process_applied_transaction(const transaction_info_st &);
+        void process_applied_transaction(const chain::transaction_trace_ptr &);
+        void _process_applied_transaction(const chain::transaction_trace_ptr &);
         void process_accepted_block(const chain::block_state_ptr &);
         void _process_accepted_block(const chain::block_state_ptr &);
         void process_irreversible_block(const chain::block_state_ptr &);
@@ -136,8 +131,8 @@ namespace eosio {
         size_t abi_cache_size = 0;
         std::deque<chain::transaction_metadata_ptr> transaction_metadata_queue;
         std::deque<chain::transaction_metadata_ptr> transaction_metadata_process_queue;
-        std::deque<transaction_info_st> transaction_trace_queue;
-        std::deque<transaction_info_st> transaction_trace_process_queue;
+        std::deque<chain::transaction_trace_ptr> transaction_trace_queue;
+        std::deque<chain::transaction_trace_ptr> transaction_trace_process_queue;
         std::deque<chain::block_state_ptr> block_state_queue;
         std::deque<chain::block_state_ptr> block_state_process_queue;
         std::deque<chain::block_state_ptr> irreversible_block_state_queue;
@@ -311,16 +306,7 @@ namespace eosio {
         try {
             if( !t->producer_block_id.valid() )
                 return;
-
-            auto &chain = chain_plug->chain();
-            transaction_info_st transactioninfo = transaction_info_st{
-                    .block_number = chain.pending_block_state()->block_num,
-                    .block_time = chain.pending_block_time(),
-                    .trace =chain::transaction_trace_ptr(t)
-            };
-            transaction_info_st &info_t = transactioninfo;
-
-            queue(mtx, condition, transaction_trace_queue, info_t, queue_size);
+            queue(mtx, condition, transaction_trace_queue, t, queue_size);
         } catch (fc::exception &e) {
             elog("FC Exception while applied_transaction ${e}", ("e", e.to_string()));
         } catch (std::exception &e) {
@@ -403,10 +389,10 @@ namespace eosio {
 
                 // warn if queue size greater than 75%
                 if (transaction_metadata_size > (queue_size * 0.75) ||
-                    transaction_trace_size > (queue_size * 0.75) ||
-                    block_state_size > (queue_size * 0.75) ||
-                    irreversible_block_size > (queue_size * 0.75)) {
-//            wlog("queue size: ${q}", ("q", transaction_metadata_size + transaction_trace_size ));
+                        transaction_trace_size > (queue_size * 0.75) ||
+                        block_state_size > (queue_size * 0.75) ||
+                        irreversible_block_size > (queue_size * 0.75)) {
+                    wlog("queue size: ${q}", ("q", transaction_metadata_size + transaction_trace_size + block_state_size + irreversible_block_size));
                 } else if (done) {
                     ilog("draining queue, size: ${q}", ("q", transaction_metadata_size + transaction_trace_size));
                 }
@@ -624,7 +610,7 @@ namespace eosio {
         }
     }
 
-    void kafka_plugin_impl::process_applied_transaction(const transaction_info_st &t) {
+    void kafka_plugin_impl::process_applied_transaction(const chain::transaction_trace_ptr &t) {
         try {
             // always call since we need to capture setabi on accounts even if not storing transaction traces
             _process_applied_transaction( t );
@@ -665,7 +651,8 @@ namespace eosio {
         }
     }
 
-    void kafka_plugin_impl::_process_accepted_transaction(const chain::transaction_metadata_ptr &t) {
+    void kafka_plugin_impl::_process_accepted_transaction(const chain::transaction_metadata_ptr &t)
+    {
         const signed_transaction& trx = t->packed_trx->get_signed_transaction();
 
         if( !filter_include( trx ) ) return;
@@ -676,9 +663,7 @@ namespace eosio {
         producer->kafka_sendmsg(KAFKA_TRX_ACCEPTED,(char*)trx_json.c_str());
     }
 
-    bool
-    kafka_plugin_impl::add_action_trace( const chain::action_trace& atrace, const chain::transaction_trace_ptr& t,
-                                            bool executed )
+    bool kafka_plugin_impl::add_action_trace( const chain::action_trace& atrace, const chain::transaction_trace_ptr& t, bool executed )
     {
         if( executed && atrace.receipt.receiver == chain::config::system_account_name ) {
             db_update_account( atrace.act );
@@ -696,41 +681,34 @@ namespace eosio {
         return added;
     }
 
-    void kafka_plugin_impl::_process_applied_transaction(const transaction_info_st &t) {
-
+    void kafka_plugin_impl::_process_applied_transaction(const chain::transaction_trace_ptr &t)
+    {
         bool write_atraces = false;
-        bool executed = t.trace->receipt.valid() && t.trace->receipt->status == chain::transaction_receipt_header::executed;
+        bool executed = t->receipt.valid() && t->receipt->status == chain::transaction_receipt_header::executed;
 
-        for( const auto& atrace : t.trace->action_traces ) {
-            write_atraces |= add_action_trace( atrace, t.trace, executed );
+        for( const auto& atrace : t->action_traces ) {
+            write_atraces |= add_action_trace( atrace, t, executed );
         }
 
         if( !start_block_reached ) return; //< add_action_trace calls db_update_account which must be called always
-        if( !write_atraces ) return; //< do not insert transaction_trace if all action_traces filtered out
+        if( !write_atraces ) return; //< do not send applied_transaction message if all action_traces filtered out
 
-        auto v = to_variant_with_abi( *t.trace );
+        auto v = to_variant_with_abi( *t );
 
-        uint64_t time = (t.block_time.time_since_epoch().count()/1000);
-        string transaction_metadata_json =
-                "{\"block_number\":" + std::to_string(t.block_number) + ",\"block_time\":" + std::to_string(time) +
-                ",\"trace\":" + fc::json::to_string(v).c_str() + "}";
-        producer->kafka_sendmsg(KAFKA_TRX_APPLIED,(char*)transaction_metadata_json.c_str());
-
+        producer->kafka_sendmsg(KAFKA_TRX_APPLIED, fc::json::to_string(v).c_str())
     }
 
     void kafka_plugin_impl::_process_accepted_block( const chain::block_state_ptr& bs )
     {
-        const auto block_num = bs->block->block_num();
-        const auto block_time = bs->block->timestamp;
         const auto block_id = bs->block->id();
         const auto block_id_str = block_id.str();
+        const auto block_num = bs->block->block_num();
 
         auto v = to_variant_with_abi( *bs->block );
         auto block_json = fc::json::to_string( v );
 
-        string accepted_block_json = "{\"block_num\":" + std::to_string(block_num) +
-                                         ",\"block_time\":" + fc::string(block_time.to_time_point()) +
-                                         ",\"block_id\":" + block_id_str +
+        string irreversible_block_json = "{\"block_id\":" + block_id_str +
+                                         ",\"block_num\":" + std::to_string(block_num) +
                                          ",\"block\":" + block_json;
 
         producer->kafka_sendmsg(KAFKA_BLOCK_ACCEPTED, (char*)accepted_block_json.c_str());
@@ -738,17 +716,15 @@ namespace eosio {
 
     void kafka_plugin_impl::_process_irreversible_block(const chain::block_state_ptr& bs)
     {
-        const auto block_num = bs->block->block_num();
-        const auto block_time = bs->block->timestamp;
         const auto block_id = bs->block->id();
         const auto block_id_str = block_id.str();
+        const auto block_num = bs->block->block_num();
 
         auto v = to_variant_with_abi( *bs->block );
         auto block_json = fc::json::to_string( v );
 
-        string irreversible_block_json = "{\"block_num\":" + std::to_string(block_num) +
-                                         ",\"block_time\":" + fc::string(block_time.to_time_point()) +
-                                         ",\"block_id\":" + block_id_str +
+        string irreversible_block_json = "{\"block_id\":" + block_id_str +
+                                         ",\"block_num\":" + std::to_string(block_num) +
                                          ",\"block\":" + block_json;
 
         producer->kafka_sendmsg(KAFKA_BLOCK_IRREVERSIBLE, (char*)irreversible_block_json.c_str());

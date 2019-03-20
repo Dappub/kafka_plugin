@@ -66,11 +66,11 @@ abi-serializer-max-time-ms = 500000  #  a large enough value is recommended to s
 
 ## Change Log
 v1.0.0:
-- Initial release
-- chain_plugin channels: 
+- initial release
+- support following chain_plugin channels: 
     - accepted_block_connection
     - irreversible_block_connection
     - accepted_transaction_connection
     - applied_transaction_connection
-- abi deserialized data
-- filters same as [mongo_db_plugin](https://developers.eos.io/eosio-nodeos/docs/mongo_db_plugin#section-example-filters)
+- provide abi deserialized data (except for eosio.onblock actions)
+- support filters same as [mongo_db_plugin](https://developers.eos.io/eosio-nodeos/docs/mongo_db_plugin#section-example-filters)
