@@ -1,6 +1,5 @@
 /**
- *  @file
- *  @copyright defined in eos/LICENSE
+ *
  */
 #include <stdlib.h>
 #include <eosio/kafka_plugin/kafka_producer.hpp>
@@ -463,15 +462,6 @@ namespace eosio {
             using bsoncxx::builder::basic::make_document;
             using bsoncxx::builder::basic::kvp;
             return accounts.find_one( make_document( kvp( "name", name.to_string())));
-        }
-
-        auto find_block( mongocxx::collection& blocks, const string& id ) {
-            using bsoncxx::builder::basic::make_document;
-            using bsoncxx::builder::basic::kvp;
-
-            mongocxx::options::find options;
-            options.projection( make_document( kvp( "_id", 1 )) ); // only return _id
-            return blocks.find_one( make_document( kvp( "block_id", id )), options);
         }
 
         void handle_mongo_exception( const std::string& desc, int line_num ) {
@@ -950,15 +940,16 @@ namespace eosio {
                 ("irreversible_block_topic", bpo::value<std::string>(),
                  "The topic for irreversible block.")
                 ("kafka-uri,k", bpo::value<std::string>(),
-                 "the kafka brokers uri, as 192.168.31.225:9092")
+                 "the kafka brokers uri"
+                 " Example: 127.0.0.1:9092")
                 ("kafka-queue-size", bpo::value<uint32_t>()->default_value(4096),
                  "The target queue size between nodeos and kafka plugin thread.")
-                ("kafka-abi-cache-size", bpo::value<uint32_t>()->default_value(4096),
+                ("kafka-abi-cache-size", bpo::value<uint32_t>()->default_value(40960),
                  "The maximum size of the abi cache for serializing data.")
                 ("kafka-mongodb-uri", bpo::value<std::string>(),
                  "MongoDB URI connection string, see: https://docs.mongodb.com/master/reference/connection-string/."
                  " If not specified then plugin is disabled. Default database 'EOS-Kafka' is used if not specified in URI."
-                 " Example: mongodb://127.0.0.1:27017/EOS-Kafka")
+                 " Example: mongodb://127.0.0.1:27017/EOS-kafka-plugin")
                 ("kafka-mongodb-wipe", bpo::bool_switch()->default_value(false),
                  "Required with --replay-blockchain, --hard-replay-blockchain, or --delete-all-blocks to wipe kafka mongo db."
                  "This option required to prevent accidental wipe of kafka mongo db.")
@@ -979,7 +970,10 @@ namespace eosio {
         char *brokers_str = NULL;
 
         try {
-            if (options.count("kafka-uri")) {
+            if (options.count("kafka-uri") && options.count("kafka-mongodb-uri") ) {
+                ilog("initializing kafka_plugin");
+                my->configured = true;
+
                 brokers_str = (char *) (options.at("kafka-uri").as<std::string>().c_str());
                 if (options.count("accepted_trx_topic") != 0) {
                     accepted_trx_topic = (char *) (options.at("accepted_trx_topic").as<std::string>().c_str());
@@ -994,22 +988,10 @@ namespace eosio {
                     irreversible_block_topic = (char *) (options.at("irreversible_block_topic").as<std::string>().c_str());
                 }
 
-                elog("brokers_str:${j}", ("j", brokers_str));
-                elog("accepted_trx_topic:${j}", ("j", accepted_trx_topic));
-                elog("applied_trx_topic:${j}", ("j", applied_trx_topic));
-                elog("accepted_block_topic:${j}", ("j", accepted_block_topic));
-                elog("irreversible_block_topic:${j}", ("j", irreversible_block_topic));
-
-                if (0!=my->producer->kafka_init(brokers_str, accepted_trx_topic, applied_trx_topic, accepted_block_topic, irreversible_block_topic)){
-                    elog("kafka_init fail");
-                } else {
-                    elog("kafka_init ok");
+                if( options.count( "abi-serializer-max-time-ms") == 0 ) {
+                    EOS_ASSERT(false, chain::plugin_config_exception, "--abi-serializer-max-time-ms required as default value not appropriate for parsing full blocks");
                 }
-            }
-
-            if (options.count("kafka-uri") && options.count("kafka-mongodb-uri") ) {
-                ilog("initializing kafka_plugin");
-                my->configured = true;
+                my->abi_serializer_max_time = app().get_plugin<chain_plugin>().get_abi_serializer_max_time();
 
                 if( options.at( "replay-blockchain" ).as<bool>() || options.at( "hard-replay-blockchain" ).as<bool>() || options.at( "delete-all-blocks" ).as<bool>() ) {
                     if( options.at( "kafka-mongodb-wipe" ).as<bool>()) {
@@ -1095,6 +1077,18 @@ namespace eosio {
 
                 if( my->wipe_database_on_startup ) {
                     my->wipe_database();
+                }
+
+                ilog("brokers_str:${j}", ("j", brokers_str));
+                ilog("accepted_trx_topic:${j}", ("j", accepted_trx_topic));
+                ilog("applied_trx_topic:${j}", ("j", applied_trx_topic));
+                ilog("accepted_block_topic:${j}", ("j", accepted_block_topic));
+                ilog("irreversible_block_topic:${j}", ("j", irreversible_block_topic));
+
+                if ( 0 != my->producer->kafka_init(brokers_str, accepted_trx_topic, applied_trx_topic, accepted_block_topic, irreversible_block_topic) ){
+                    elog("kafka_init failed");
+                } else {
+                    ilog("kafka_init succeeded");
                 }
 
                 my->init();
