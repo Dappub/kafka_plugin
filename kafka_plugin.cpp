@@ -122,6 +122,10 @@ namespace eosio {
         bool filter_on_star = true;
         std::set<filter_entry> filter_on;
         std::set<filter_entry> filter_out;
+        bool send_accepted_block = false;
+        bool send_irreversible_block = false;
+        bool send_accepted_transaction = false;
+        bool send_applied_transaction = false;
 
         std::string db_name;
         fc::optional<mongocxx::pool> mongo_pool;
@@ -155,10 +159,10 @@ namespace eosio {
         };
 
         typedef boost::multi_index_container<abi_cache,
-                indexed_by<
+            indexed_by<
                 ordered_unique< tag<by_account>,  member<abi_cache,account_name,&abi_cache::account> >,
-        ordered_non_unique< tag<by_last_access>,  member<abi_cache,fc::time_point,&abi_cache::last_accessed> >
-        >
+                ordered_non_unique< tag<by_last_access>,  member<abi_cache,fc::time_point,&abi_cache::last_accessed> >
+            >
         > abi_cache_index_t;
 
         abi_cache_index_t abi_cache_index;
@@ -289,10 +293,16 @@ namespace eosio {
         }
 
     }
+    bool send_accepted_block = false;
+    bool send_irreversible_block = false;
+    bool send_accepted_transaction = false;
+    bool send_applied_transaction = false;
 
     void kafka_plugin_impl::accepted_transaction(const chain::transaction_metadata_ptr &t) {
         try {
-            queue(mtx, condition, transaction_metadata_queue, t, queue_size);
+            if ( send_accepted_transaction ) {
+                queue(mtx, condition, transaction_metadata_queue, t, queue_size);
+            }
         } catch (fc::exception &e) {
             elog("FC Exception while accepted_transaction ${e}", ("e", e.to_string()));
         } catch (std::exception &e) {
@@ -318,7 +328,9 @@ namespace eosio {
 
     void kafka_plugin_impl::applied_irreversible_block(const chain::block_state_ptr &bs) {
         try {
-            queue(mtx, condition, irreversible_block_state_queue, bs, queue_size);
+            if ( send_irreversible_block ) {
+                queue(mtx, condition, irreversible_block_state_queue, bs, queue_size);
+            }
         } catch (fc::exception &e) {
             elog("FC Exception while applied_irreversible_block ${e}", ("e", e.to_string()));
         } catch (std::exception &e) {
@@ -335,7 +347,9 @@ namespace eosio {
                     start_block_reached = true;
                 }
             }
-            queue(mtx, condition, block_state_queue, bs, queue_size);
+            if ( send_accepted_block ) {
+                queue(mtx, condition, block_state_queue, bs, queue_size);
+            }
         } catch (fc::exception &e) {
             elog("FC Exception while accepted_block ${e}", ("e", e.to_string()));
         } catch (std::exception &e) {
@@ -391,9 +405,12 @@ namespace eosio {
                         transaction_trace_size > (queue_size * 0.75) ||
                         block_state_size > (queue_size * 0.75) ||
                         irreversible_block_size > (queue_size * 0.75)) {
-                    wlog("queue size: ${q}", ("q", transaction_metadata_size + transaction_trace_size + block_state_size + irreversible_block_size));
+                    wlog("transaction_metadata queue size: ${q}", ("q", transaction_metadata_size));
+                    wlog("transaction_trace queue size: ${q}", ("q", transaction_trace_size));
+                    wlog("block_state queue size: ${q}", ("q", block_state_size));
+                    wlog("irreversible_block queue size: ${q}", ("q", irreversible_block_size));
                 } else if (done) {
-                    ilog("draining queue, size: ${q}", ("q", transaction_metadata_size + transaction_trace_size));
+                    ilog("draining queue, size: ${q}", ("q", transaction_metadata_size + transaction_trace_size + block_state_size + irreversible_block_size));
                 }
 
                 // process transactions
@@ -449,7 +466,7 @@ namespace eosio {
             return accounts.find_one( make_document( kvp( "name", name.to_string())));
         }
 
-        void handle_mongo_exception( const std::string& desc, int line_num ) {
+        void handle_kafka_exception( const std::string& desc, int line_num ) {
             bool shutdown = true;
             try {
                 try {
@@ -472,20 +489,20 @@ namespace eosio {
                     elog( "bsoncxx exception, ${desc}, line ${line}, code ${code}, ${what}",
                           ("desc", desc)( "line", line_num )( "code", e.code().value() )( "what", e.what() ));
                 } catch( fc::exception& er ) {
-                    elog( "mongo fc exception, ${desc}, line ${line}, ${details}",
+                    elog( "kafka fc exception, ${desc}, line ${line}, ${details}",
                           ("desc", desc)( "line", line_num )( "details", er.to_detail_string()));
                 } catch( const std::exception& e ) {
-                    elog( "mongo std exception, ${desc}, line ${line}, ${what}",
+                    elog( "kafka std exception, ${desc}, line ${line}, ${what}",
                           ("desc", desc)( "line", line_num )( "what", e.what()));
                 } catch( ... ) {
-                    elog( "mongo unknown exception, ${desc}, line ${line_nun}", ("desc", desc)( "line_num", line_num ));
+                    elog( "kafka unknown exception, ${desc}, line ${line_nun}", ("desc", desc)( "line_num", line_num ));
                 }
             } catch (...) {
                 std::cerr << "Exception attempting to handle exception for " << desc << " " << line_num << std::endl;
             }
 
             if( shutdown ) {
-                // shutdown if mongo failed to provide opportunity to fix issue and restart
+                // shutdown if failed to provide opportunity to fix issue and restart
                 app().quit();
             }
         }
@@ -659,7 +676,11 @@ namespace eosio {
         auto v = to_variant_with_abi( trx );
         string trx_json = fc::json::to_string( v );
 
-        producer->kafka_sendmsg(KAFKA_TRX_ACCEPTED,(char*)trx_json.c_str());
+        try {
+            producer->kafka_sendmsg(KAFKA_TRX_ACCEPTED, (char*)trx_json.c_str());
+        } catch (...) {
+            handle_kafka_exception("send accepted_trx: ", __LINE__);
+        }
     }
 
     bool kafka_plugin_impl::add_action_trace( const chain::action_trace& atrace, const chain::transaction_trace_ptr& t, bool executed )
@@ -686,15 +707,25 @@ namespace eosio {
         bool executed = t->receipt.valid() && t->receipt->status == chain::transaction_receipt_header::executed;
 
         for( const auto& atrace : t->action_traces ) {
-            write_atraces |= add_action_trace( atrace, t, executed );
+            try {
+                write_atraces |= add_action_trace( atrace, t, executed );
+            } catch(...) {
+                handle_kafka_exception("add action traces", __LINE__);
+            }
         }
 
         if( !start_block_reached ) return; //< add_action_trace calls db_update_account which must be called always
         if( !write_atraces ) return; //< do not send applied_transaction message if all action_traces filtered out
 
-        auto v = to_variant_with_abi( *t );
-
-        producer->kafka_sendmsg(KAFKA_TRX_APPLIED, (char*)fc::json::to_string(v).c_str());
+        if ( send_applied_transaction ) {
+            auto v = to_variant_with_abi( *t );
+            string trx_json = fc::json::to_string( v );
+            try {
+                producer->kafka_sendmsg(KAFKA_TRX_APPLIED, (char*)trx_json.c_str());
+            } catch (...) {
+                handle_kafka_exception("send applied_trx: ", __LINE__);
+            }
+        }
     }
 
     void kafka_plugin_impl::_process_accepted_block( const chain::block_state_ptr& bs )
@@ -711,7 +742,11 @@ namespace eosio {
                                      ",\"block\":" + block_json +
                                      "}";
 
-        producer->kafka_sendmsg(KAFKA_BLOCK_ACCEPTED, (char*)accepted_block_json.c_str());
+        try {
+            producer->kafka_sendmsg(KAFKA_BLOCK_ACCEPTED, (char*)accepted_block_json.c_str());
+        } catch (...) {
+            handle_kafka_exception("send accepted_block: ", __LINE__);
+        }
     }
 
     void kafka_plugin_impl::_process_irreversible_block(const chain::block_state_ptr& bs)
@@ -728,7 +763,11 @@ namespace eosio {
                                          ",\"block\":" + block_json +
                                          "}";
 
-        producer->kafka_sendmsg(KAFKA_BLOCK_IRREVERSIBLE, (char*)irreversible_block_json.c_str());
+        try {
+            producer->kafka_sendmsg(KAFKA_BLOCK_IRREVERSIBLE, (char*)irreversible_block_json.c_str());
+        } catch (...) {
+            handle_kafka_exception("send irreversible_block: ", __LINE__);
+        }
     }
 
     namespace {
@@ -750,7 +789,7 @@ namespace eosio {
                     EOS_ASSERT( false, chain::mongo_db_update_fail, "Failed to insert account ${n}", ("n", name));
                 }
             } catch (...) {
-                handle_mongo_exception( "create_account", __LINE__ );
+                handle_kafka_exception( "create_account", __LINE__ );
             }
         }
 
@@ -800,7 +839,7 @@ namespace eosio {
                                 EOS_ASSERT( false, chain::mongo_db_update_fail, "Failed to udpdate account ${n}", ("n", setabi.account));
                             }
                         } catch( ... ) {
-                            handle_mongo_exception( "account update", __LINE__ );
+                            handle_kafka_exception( "account update", __LINE__ );
                         }
                     } catch( bsoncxx::exception& e ) {
                         elog( "Unable to convert abi JSON to MongoDB JSON: ${e}", ("e", e.what()));
@@ -873,7 +912,7 @@ namespace eosio {
                                     ("n", name( chain::config::system_account_name ).to_string()));
                     }
                 } catch (...) {
-                    handle_mongo_exception( "account insert", __LINE__ );
+                    handle_kafka_exception( "account insert", __LINE__ );
                 }
 
                 try {
@@ -881,11 +920,11 @@ namespace eosio {
                     accounts.create_index( bsoncxx::from_json( R"xxx({ "name" : 1 })xxx" ));
 
                 } catch (...) {
-                    handle_mongo_exception( "create indexes", __LINE__ );
+                    handle_kafka_exception( "create indexes", __LINE__ );
                 }
             }
         } catch (...) {
-            handle_mongo_exception( "mongo init", __LINE__ );
+            handle_kafka_exception( "kafka-mongo init", __LINE__ );
         }
 
         ilog("starting kafka plugin thread");
@@ -940,11 +979,11 @@ namespace eosio {
     }
 
     void kafka_plugin::plugin_initialize(const variables_map &options) {
+        char *brokers_str = NULL;
         char *accepted_trx_topic = NULL;
         char *applied_trx_topic = NULL;
         char *accepted_block_topic = NULL;
         char *irreversible_block_topic = NULL;
-        char *brokers_str = NULL;
 
         try {
             if (options.count("kafka-uri") && options.count("kafka-mongodb-uri") ) {
@@ -954,15 +993,19 @@ namespace eosio {
                 brokers_str = (char *) (options.at("kafka-uri").as<std::string>().c_str());
                 if (options.count("accepted_trx_topic") != 0) {
                     accepted_trx_topic = (char *) (options.at("accepted_trx_topic").as<std::string>().c_str());
+                    send_accepted_transaction = true;
                 }
                 if (options.count("applied_trx_topic") != 0) {
                     applied_trx_topic = (char *) (options.at("applied_trx_topic").as<std::string>().c_str());
+                    send_applied_transaction = true;
                 }
                 if (options.count("accepted_block_topic") != 0) {
                     accepted_block_topic = (char *) (options.at("accepted_block_topic").as<std::string>().c_str());
+                    send_accepted_block = true;
                 }
                 if (options.count("irreversible_block_topic") != 0) {
                     irreversible_block_topic = (char *) (options.at("irreversible_block_topic").as<std::string>().c_str());
+                    send_irreversible_block = true;
                 }
 
                 if( options.count( "abi-serializer-max-time-ms") == 0 ) {
@@ -988,7 +1031,7 @@ namespace eosio {
                     EOS_ASSERT(my->abi_cache_size > 0, chain::plugin_config_exception, "kafka-abi-cache-size > 0 required");
                 }
                 if( options.count( "kafka-block-start" )) {
-                        my->start_block_num = options.at("kafka-block-start").as<uint32_t>();
+                    my->start_block_num = options.at("kafka-block-start").as<uint32_t>();
                 }
                 if( options.count( "kafka-filter-on" )) {
                     auto fo = options.at( "kafka-filter-on" ).as<vector<string>>();
@@ -1064,6 +1107,7 @@ namespace eosio {
 
                 if ( 0 != my->producer->kafka_init(brokers_str, accepted_trx_topic, applied_trx_topic, accepted_block_topic, irreversible_block_topic) ){
                     elog("kafka_init failed");
+                    EOS_ASSERT( false, chain::plugin_config_exception, "kafka init failed" );
                 } else {
                     ilog("kafka_init succeeded");
                 }

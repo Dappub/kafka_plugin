@@ -55,10 +55,9 @@ kafka-block-start = 0
 kafka-queue-size = 4096
 kafka-abi-cache-size = 40960
 kafka-mongodb-uri = mongodb://localhost:27017/EOS-kafka-plugin
-kafka-mongodb-wipe = false
 abi-serializer-max-time-ms = 500000  #  a large enough value is recommended to serialize large blocks
-# kafka-filter-on *
-# kafka-filter-out blocktwitter::
+kafka-filter-on *
+kafka-filter-out blocktwitter::
 ```
 
 ## Message Examples

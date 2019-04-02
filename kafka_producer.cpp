@@ -20,13 +20,14 @@ namespace eosio {
 
         *conf = rd_kafka_conf_new();
 
-        if (rd_kafka_conf_set(*conf, "bootstrap.servers", brokers, errstr,
-                              sizeof(errstr)) != RD_KAFKA_CONF_OK) {
+        if (rd_kafka_conf_set(*conf, "bootstrap.servers", brokers, errstr, sizeof(errstr)) != RD_KAFKA_CONF_OK) {
             fprintf(stderr, "%s\n", errstr);
             return KAFKA_STATUS_INIT_FAIL;
         }
 
-        rd_kafka_conf_set_dr_msg_cb(*conf, dr_msg_cb);
+        rd_kafka_conf_set( *conf, "message.max.bytes", "104857600", errstr, sizeof(errstr) );
+        rd_kafka_conf_set( *conf, "request.required.acks", "1", errstr, sizeof(errstr) );
+//        rd_kafka_conf_set_dr_msg_cb(*conf, dr_msg_cb);
 
         *rk = rd_kafka_new(RD_KAFKA_PRODUCER, *conf, errstr, sizeof(errstr));
         if (!(*rk)) {
@@ -131,7 +132,7 @@ namespace eosio {
     }
 
     int kafka_producer::kafka_destroy(void) {
-        fprintf(stderr, "[kafka_destroy]Flushing final message.. \n");
+        fprintf(stdout, "[kafka_destroy]Flushing final message.. \n");
         if (trx_accepted_rk != NULL) {
             rd_kafka_flush(trx_accepted_rk, 10 * 1000);
             /* Destroy topic object */
@@ -168,6 +169,7 @@ namespace eosio {
             block_irreversible_rk = NULL;
             block_irreversible_rkt = NULL;
         }
+        fprintf(stdout, "[kafka_destroy]Done.\n");
 
         return KAFKA_STATUS_OK;
     }
