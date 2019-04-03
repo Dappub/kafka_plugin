@@ -1096,10 +1096,10 @@ namespace eosio {
                 }
 
                 ilog("brokers_str:${j}", ("j", brokers_str));
-                ilog("accepted_trx_topic:${j}", ("j", accepted_trx_topic));
-                ilog("applied_trx_topic:${j}", ("j", applied_trx_topic));
-                ilog("accepted_block_topic:${j}", ("j", accepted_block_topic));
-                ilog("irreversible_block_topic:${j}", ("j", irreversible_block_topic));
+                ilog("accepted_trx_topic:${j}", ("j", accepted_trx_topic ? accepted_trx_topic: "not set"));
+                ilog("applied_trx_topic:${j}", ("j", applied_trx_topic ? applied_trx_topic: "not set"));
+                ilog("accepted_block_topic:${j}", ("j", accepted_block_topic ? accepted_block_topic: "not set"));
+                ilog("irreversible_block_topic:${j}", ("j", irreversible_block_topic ? irreversible_block_topic: "not set"));
 
                 if ( 0 != my->producer->kafka_init(brokers_str, accepted_trx_topic, applied_trx_topic, accepted_block_topic, irreversible_block_topic) ){
                     elog("kafka_init failed");
