@@ -293,10 +293,6 @@ namespace eosio {
         }
 
     }
-    bool send_accepted_block = false;
-    bool send_irreversible_block = false;
-    bool send_accepted_transaction = false;
-    bool send_applied_transaction = false;
 
     void kafka_plugin_impl::accepted_transaction(const chain::transaction_metadata_ptr &t) {
         try {
@@ -993,19 +989,19 @@ namespace eosio {
                 brokers_str = (char *) (options.at("kafka-uri").as<std::string>().c_str());
                 if (options.count("accepted_trx_topic") != 0) {
                     accepted_trx_topic = (char *) (options.at("accepted_trx_topic").as<std::string>().c_str());
-                    send_accepted_transaction = true;
+                    my->send_accepted_transaction = true;
                 }
                 if (options.count("applied_trx_topic") != 0) {
                     applied_trx_topic = (char *) (options.at("applied_trx_topic").as<std::string>().c_str());
-                    send_applied_transaction = true;
+                    my->send_applied_transaction = true;
                 }
                 if (options.count("accepted_block_topic") != 0) {
                     accepted_block_topic = (char *) (options.at("accepted_block_topic").as<std::string>().c_str());
-                    send_accepted_block = true;
+                    my->send_accepted_block = true;
                 }
                 if (options.count("irreversible_block_topic") != 0) {
                     irreversible_block_topic = (char *) (options.at("irreversible_block_topic").as<std::string>().c_str());
-                    send_irreversible_block = true;
+                    my->send_irreversible_block = true;
                 }
 
                 if( options.count( "abi-serializer-max-time-ms") == 0 ) {
